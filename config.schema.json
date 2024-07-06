@@ -139,6 +139,75 @@
         }
       }
     },
+    "kensgrovefans": {
+      "title": "Kansgrove Fans",
+      "required": false,
+      "type": "array",
+      "items": {
+        "name": "Fan Config",
+        "type": "object",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string",
+            "required": true
+          },
+          "hint": {
+            "title": "Hint",
+            "type": "string",
+            "description": "Your own hint to remember the fan",
+            "required": false
+          },
+          "type": {
+            "title": "Type",
+            "type": "string",
+            "required": false
+          },
+          "devicecode": {
+            "title": "Device Code",
+            "type": "object",
+            "required": false,
+            "properties":{
+              "id":{
+                "title":"ID",
+                "type":"string",
+                "required": false
+              },
+              "unit":{
+                "title":"Unit",
+                "type":"string",
+                "required": false
+              },
+              "state":{
+                "title":"State",
+                "type":"string",
+                "required": false
+              }
+            }
+          },
+          "code":{
+            "title":"Code",
+            "type":"number",
+            "required":false
+          },
+          "mask":{
+            "title":"Bitmask",
+            "type":"number",
+            "required":false
+          },
+          "pulse":{
+            "title":"Pulse",
+            "type":"number",
+            "required":false
+          },
+          "protocol":{
+            "title":"Protocol",
+            "type":"number",
+            "required":false
+          }
+        }
+      }
+    },
     "buttons": {
       "title": "Buttons",
       "required": false,

@@ -3,6 +3,21 @@ const SerialTransceiver = require('./tc-serial');
 const WebsocketTransceiver = require('./tc-websocket');
 var sentCodes = [];
 
+const FAN_SPEED_MASK = 0x3C0;
+const FAN_SPEED_OFFSET = 6;
+const FAN_SPEED_NO_CHANGE = 10;
+const FAN_DIRECTION_MASK = 0x30;
+const FAN_DIRECTION_OFFSET = 4;
+const FAN_DIRECTION_CW = 0x20;
+const FAN_DIRECTION_CCW = 0x10;
+const LIGHT_MASK = 0xF;
+const LIGHT_ON = 0xD;
+const LIGHT_OFF = 0xE;
+const LIGHT_UP = 0x2;
+const LIGHT_DOWN = 0x3;
+const LIGHT_TOGGLE = 0x4;
+const DEVICE_MASK = 0xFFFFC00;
+
 /** PLATFORM CLASS **/
 function ArduinoSwitchPlatform (log, config) {
   const self = this;
@@ -34,6 +49,11 @@ ArduinoSwitchPlatform.prototype.accessories = function (callback) {
   if (self.config.switches) {
     self.config.switches.forEach(function (sw) {
       self.accessories.push(new ArduinoSwitchAccessory(sw, self.log, self.config, self.transceiver));
+    });
+  }
+  if (self.config.kensgrovefans) {
+    self.config.kensgrovefans.forEach(function (sw) {
+      self.accessories.push(new ArduinoKensgroveFanAccessory(sw, self.log, self.config, self.transceiver));
     });
   }
   if (self.config.buttons) {
@@ -148,6 +168,289 @@ ArduinoSwitchAccessory.prototype.getServices = function () {
     .setCharacteristic(Characteristic.HardwareRevision, '1.0.0');
   services.push(service);
   services.push(self.service);
+  return services;
+};
+
+/** KENSGROVE FAN ACCESSORY CLASS **/
+function ArduinoKensgroveFanAccessory (sw, log, config, transceiver) {
+  const self = this;
+  self.name = sw.name;
+  self.sw = sw;
+  self.log = log;
+  self.config = config;
+  self.transceiver = transceiver;
+  self.fanOn = false;
+  self.fanSpeed = 100.0;
+  self.fanDirection = 0;
+  self.fanSwing = 0;
+  self.lightOn = false;
+  self.lightBrightness = 100.0;
+
+  self.throttle = config.throttle ? config.throttle : 500;
+
+  self.fanService = new Service.Fanv2(self.name);
+  self.lightService = new Service.Lightbulb(self.name);
+
+		/*
+        // FAN SERVICE
+        this.fanService = (_a = this.accessory.getService(this.platform.Service.Fanv2)) !== null && _a !== void 0 ? _a : this.accessory.addService(this.platform.Service.Fanv2);
+        this.fanService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.ip);
+        this.fanService.getCharacteristic(this.platform.Characteristic.On)
+            .on('set', this.setFanOn.bind(this))
+            .on('get', this.getFanOn.bind(this));
+        this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
+            .on('set', this.setRotationSpeed.bind(this))
+            .on('get', this.getRotationSpeed.bind(this))
+            .setProps({ minStep: this.getStepWithoutGoingOver(6) });
+        this.fanService.getCharacteristic(this.platform.Characteristic.RotationDirection)
+            .on('set', this.setRotationDirection.bind(this))
+            .on('get', this.getRotationDirection.bind(this));
+        // LIGHT SERVICE
+        this.lightService = (_b = this.accessory.getService(this.platform.Service.Lightbulb)) !== null && _b !== void 0 ? _b : this.accessory.addService(this.platform.Service.Lightbulb);
+        this.lightService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.ip);
+        this.lightService.getCharacteristic(this.platform.Characteristic.On)
+            .on('set', this.setLightOn.bind(this))
+            .on('get', this.getLightOn.bind(this));
+        this.lightService.getCharacteristic(this.platform.Characteristic.Brightness)
+            .on('get', this.getBrightness.bind(this))
+            .on('set', this.setBrightness.bind(this));
+			*/
+
+  self.fanService.getCharacteristic(Characteristic.On).value = self.fanOn;
+
+  self.fanService.getCharacteristic(Characteristic.On).on('get', function (cb) {
+    cb(null, self.fanOn);
+  });
+
+  self.fanService.getCharacteristic(Characteristic.On).on('set', function (state, cb) {
+    self.fanOn = state;
+	const out = self.getKensGroveFanSendObject();
+	addCode(out, sentCodes);
+	self.transceiver.send(out);
+	self.log('Sent %s code for %s', out.code.toString(16), self.sw.name);
+    cb(null);
+  });
+  
+  self.fanService.getCharacteristic(Characteristic.RotationSpeed).value = self.fanSpeed;
+
+  self.fanService.getCharacteristic(Characteristic.RotationSpeed).on('get', function (cb) {
+    cb(null, self.fanSpeed);
+  });
+
+  self.fanService.getCharacteristic(Characteristic.RotationSpeed).on('set', function (state, cb) {
+    self.fanSpeed = state;
+	if( state == 0) self.fenOn = 0;
+	const out = self.getKensGroveFanSendObject();
+	addCode(out, sentCodes);
+	self.transceiver.send(out);
+	self.log('Sent %s code for %s', out.code.toString(16), self.sw.name);
+    cb(null);
+
+    // TODO add support for swing mode to map to breeze mode on the fan
+  });
+  
+  self.fanService.getCharacteristic(Characteristic.RotationDirection).value = self.fanDirection;
+
+  self.fanService.getCharacteristic(Characteristic.RotationDirection).on('get', function (cb) {
+    cb(null, self.fanDirection);
+  });
+
+  self.fanService.getCharacteristic(Characteristic.RotationDirection).on('set', function (state, cb) {
+    self.fanDirection = state;
+	const out = self.getKensGroveFanSendObject();
+	addCode(out, sentCodes);
+	self.transceiver.send(out);
+	self.log('Sent %s code for %s', out.code.toString(16), self.sw.name);
+    cb(null);
+  });
+
+  self.fanService.getCharacteristic(Characteristic.SwingMode).value = self.fanSwing;
+
+  self.fanService.getCharacteristic(Characteristic.SwingMode).on('get', function (cb) {
+    cb(null, self.fanSwing);
+  });
+
+  self.fanService.getCharacteristic(Characteristic.SwingMode).on('set', function (state, cb) {
+    self.fanSwing = state;
+	const out = self.getKensGroveFanSendObject();
+	addCode(out, sentCodes);
+	self.transceiver.send(out);
+	self.log('Sent %s code for %s', out.code.toString(16), self.sw.name);
+    cb(null);
+  });
+
+  self.lightService.getCharacteristic(Characteristic.On).value = self.lightOn;
+
+  self.lightService.getCharacteristic(Characteristic.On).on('get', function (cb) {
+    cb(null, self.lightOn);
+  });
+
+  self.lightService.getCharacteristic(Characteristic.On).on('set', function (state, cb) {
+    self.lightOn = state;
+	const out = self.getKensGroveFanSendObject();
+	addCode(out, sentCodes);
+	self.transceiver.send(out);
+	self.log('Sent %s code for %s', out.code.toString(16), self.sw.name);
+    cb(null);
+  });
+  
+  self.lightService.getCharacteristic(Characteristic.Brightness).value = self.lightBrightness;
+
+  self.lightService.getCharacteristic(Characteristic.Brightness).on('get', function (cb) {
+    cb(null, self.lightBrightness);
+  });
+
+  self.lightService.getCharacteristic(Characteristic.Brightness).on('set', function (state, cb) {
+	if( state > 0) {
+      self.lightOn = true;
+    } else {
+      self.lightOn = false;
+	}
+	// TODO send number of light up or down codes to move light to the target brightness
+	const out = self.getKensGroveFanSendObject( state > self.lightBrightness ? 1 : ( state < self.lightBrightness ? -1 : 0));
+	steps = (state - self.lightBrightness) * .8;
+	steps = Math.abs( steps.toFixed());
+	self.log('%s steps from %s to %s', steps, self.lightBrightness, state);
+	for( let i=0; i<steps; i++) {
+		addCode(out, sentCodes);
+		self.transceiver.send(out);
+		self.log('Sent %s code for %s', steps, self.lightBrightness, state);
+	}
+	self.lightBrightness = state;
+    cb(null);
+  });
+  
+  self.notifyCommand = helpers.throttle(function ( code) {
+    self.log('Received code %s for %s', code.toString(16), self.sw.name);
+
+	// extract the speed code
+	speedCode = (code & FAN_SPEED_MASK) >> FAN_SPEED_OFFSET;
+	if( speedCode >= 0 && speedCode <= 9)
+	{
+		self.fanSpeed = speedCode * 100.0 / 9.0;
+		self.fanOn = speedCode == 0 ? false : true;
+		self.fanSwing = Characteristic.SwingMode.SWING_DISABLED;
+		self.fanService.getCharacteristic(Characteristic.On).updateValue(self.fanOn);
+		self.fanService.getCharacteristic(Characteristic.SwingMode).updateValue(self.fanSwing);
+		self.fanService.getCharacteristic(Characteristic.RotationSpeed).updateValue(self.fanSpeed);
+	}
+	else if( speedCode >= 11 && speedCode <= 13) {
+		self.fanSpeed = ( speedCode - 10) * 100.0 / 3.0;
+		self.fanOn = true;
+		self.fanSwing = Characteristic.SwingMode.SWING_ENABLED;
+		self.fanService.getCharacteristic(Characteristic.On).updateValue(self.fanOn);
+		self.fanService.getCharacteristic(Characteristic.SwingMode).updateValue(self.fanSwing);
+		self.fanService.getCharacteristic(Characteristic.RotationSpeed).updateValue(self.fanSpeed);
+	}
+
+	// extract the direction
+	self.fanDirection = ( code & FAN_DIRECTION_MASK) == FAN_DIRECTION_CW ? Characteristic.RotationDirection.CLOCKWISE : Characteristic.RotationDirection.COUNTER_CLOCKWISE;
+	self.fanService.getCharacteristic(Characteristic.RotationDirection).updateValue(self.fanDirection);
+
+	// extract the light and set on, off or toggle
+	lightCode = (code & LIGHT_MASK);
+    self.log('light code %s', lightCode.toString(16));
+
+	// if light up/down change the percentage
+	switch( lightCode) {
+		case LIGHT_ON:
+			self.lightOn = true;
+			self.lightService.getCharacteristic(Characteristic.On).updateValue(self.lightOn);
+			break;
+
+		case LIGHT_OFF:
+			self.lightOn = false;
+			self.lightService.getCharacteristic(Characteristic.On).updateValue(self.lightOn);
+			break;
+
+		case LIGHT_TOGGLE:
+			self.log('lightOn was %s', self.lightOn);
+			self.lightOn  = 1 - self.lightOn;
+			self.log('lightOn changed to %s', self.lightOn);
+			self.lightService.getCharacteristic(Characteristic.On).updateValue(self.lightOn);
+			break;
+
+		case LIGHT_UP:
+			self.lightBrightness  += ( 100.0 / 80.0);
+			if( self.lightBrightness > 100.0) self.lightBrightness = 100.0;
+			self.log('light brightness %s', self.lightBrightness);
+			self.lightService.getCharacteristic(Characteristic.Brightness).updateValue(self.lightBrightness);
+			break;
+
+		case LIGHT_DOWN:
+			self.lightBrightness  -= ( 100.0 / 80.0);
+			if( self.lightBrightness < 0) self.lightBrightness = 0;
+			self.log('light brightness %s', self.lightBrightness);
+			self.lightService.getCharacteristic(Characteristic.Brightness).updateValue(self.lightBrightness);
+			break;
+	}
+
+    //self.currentState = true;
+    //self.service.getCharacteristic(Characteristic.On).updateValue(self.currentState);
+  }, self.throttle, self);
+}// TODO: code stuff
+
+
+// check the message aginst the device mask, if it matches, deconstruct the message to set values, and handle light toggle
+ArduinoKensgroveFanAccessory.prototype.notify = function (message) {
+  if (isSameAsSwitch(message, this.sw)) {
+    this.notifyCommand( message.code);
+    return true;
+  }
+  return false;
+};
+
+
+// make a new Kensgrove Fan object to send
+ArduinoKensgroveFanAccessory.prototype.getKensGroveFanSendObject = function ( lightChange = 0) {
+  const self = this;
+  var out = {};
+  if (self.sw.devicecode) {
+	// send the fan speed value for fanSpeed
+	if( self.fanOn) {
+		// treat breeze mode as swing enabled, with 3 speeds mapped to fan speed code of 11, 12, 13
+		if( self.fanSwing == Characteristic.SwingMode.SWING_ENABLED) {
+			speedCode = 10 + self.fanSpeed * 3.0 / 100.0
+		}
+		else {
+			speedCode = (self.fanSpeed * 9.0/100.0);
+		}
+	}
+	else {
+		speedCode = 0;
+	}
+
+	if( lightChange != 0) {
+		lightCode = ((lightChange == 1) ? LIGHT_UP : LIGHT_DOWN);
+	}
+	else {
+		lightCode = (self.lightOn ? LIGHT_ON : LIGHT_OFF);
+	}
+
+	self.log('speed: %s direction %s light %s', self.fanSpeed, self.fanDirection, self.lightOn);
+    out.code =
+		self.sw.devicecode.code |
+		(speedCode << FAN_SPEED_OFFSET) |
+		(self.fanDirection == Characteristic.RotationDirection.CLOCKWISE ? FAN_DIRECTION_CW : FAN_DIRECTION_CCW) |
+		(lightCode);
+
+    out.pulse = self.sw.devicecode.pulse;
+    out.protocol = self.sw.devicecode.protocol ? self.sw.devicecode.protocol : 1;
+  }
+  return out;
+}
+
+ArduinoKensgroveFanAccessory.prototype.getServices = function () {
+  const self = this;
+  var services = [];
+  var service = new Service.AccessoryInformation();
+  service.setCharacteristic(Characteristic.Name, self.name)
+    .setCharacteristic(Characteristic.Manufacturer, '433 MHz RC')
+    .setCharacteristic(Characteristic.FirmwareRevision, process.env.version)
+    .setCharacteristic(Characteristic.HardwareRevision, '1.0.0');
+  services.push(service);
+  services.push(self.fanService);
+  services.push(self.lightService);
   return services;
 };
 
@@ -399,7 +702,9 @@ function getSwitchState (message, sw) {
 }
 // TODO not needed since isSameMessage on/off addition?
 function isSameAsSwitch (message, sw, compareState = false) {
-  if (sw.on && sw.off) { // on/off format
+  if (sw.devicecode) { // Kensgrove fan format
+  	if ((message.code & sw.devicecode.mask) === sw.devicecode.code) return true;
+  } else if (sw.on && sw.off) { // on/off format
     if (isSameMessage(message, sw.on, compareState)) return true;
     if (isSameMessage(message, sw.off, compareState)) return true;
   } else { // button/espilight format
@@ -435,6 +740,7 @@ function isSameMessage (message, prototype, compareState = false) {
   }
   return false;
 }
+
 // make a new object to send
 function getSendObject (sw, on = undefined) {
   var out = {};
